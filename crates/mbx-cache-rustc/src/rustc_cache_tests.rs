@@ -636,7 +636,11 @@ fn profile_use_is_a_content_hashed_required_path_across_spellings_and_checkouts(
             _ => unreachable!("known profile-use spelling"),
         }
         let invocation = RustcInvocation::parse(&arguments).unwrap();
-        assert!(invocation.required_inputs_in(working_dir).contains(&profile));
+        assert!(
+            invocation
+                .required_inputs_in(working_dir)
+                .contains(&profile)
+        );
         invocation
             .action(ActionContext {
                 working_dir: working_dir.to_path_buf(),

@@ -1030,7 +1030,12 @@ mod tests {
                 .unwrap()
         };
         let initial_inputs = discover();
-        assert!(initial_inputs.inputs.iter().any(|input| input.path == profile));
+        assert!(
+            initial_inputs
+                .inputs
+                .iter()
+                .any(|input| input.path == profile)
+        );
         let mut context = library_context(root, mappings.clone());
         initial_inputs.clone().apply_to(&mut context).unwrap();
         let initial_action = invocation.action(context.clone()).unwrap();

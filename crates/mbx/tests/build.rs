@@ -669,6 +669,7 @@ fn isolated_cargo_command(
         .env_remove("MBX_SOCKET")
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
         .env_remove("CLIPPY_CONF_DIR");
     for (name, value) in settings {
         command.env(name, value);
@@ -7932,4 +7933,75 @@ fn a_compilation_removes_the_object_files_its_predecessors_left() {
         incremental_sessions(project.path()) > 0,
         "still incremental"
     );
+}
+
+/// Exercise Cargo's late workspace-wrapper selection while mbx owns the outer
+/// rustc wrapper, including the config-only path Cargo does not export.
+#[cfg(target_os = "macos")]
+#[test]
+fn late_workspace_wrappers_keep_objects_when_they_skip_rustc() {
+    for mode in ["environment", "config"] {
+        let store = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let reports = tempfile::tempdir().unwrap();
+        write_object_project(project.path(), 1);
+        generate_lockfile(project.path());
+        build_with(
+            project.path(),
+            store.path(),
+            &reports.path().join("seed.json"),
+            &[("MBX_INCREMENTAL", "1")],
+        );
+        let old_objects = object_files(project.path());
+        assert!(!old_objects.is_empty(), "the seed build left debug objects");
+
+        let wrapper = project.path().join("workspace-wrapper");
+        let wrapper_log = project.path().join("workspace-wrapper.log");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\nfor arg do\n  case \"$arg\" in\n    -vV|--print|--print=*) exec \"$@\" ;;\n  esac\ndone\nprintf 'called\\n' >> \"$MBX_TEST_WRAPPER_LOG\"\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let cargo_shim = project.path().join("cargo-shim");
+        std::fs::write(
+            &cargo_shim,
+            "#!/bin/sh\ncase \"$MBX_TEST_WORKSPACE_MODE\" in\n  environment)\n    export RUSTC_WORKSPACE_WRAPPER=\"$MBX_TEST_WORKSPACE_WRAPPER\"\n    unset CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER\n    ;;\n  config)\n    unset RUSTC_WORKSPACE_WRAPPER CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER\n    set -- \"$@\" --config \"build.rustc-workspace-wrapper=\\\"$MBX_TEST_WORKSPACE_WRAPPER\\\"\"\n    ;;\nesac\nexec \"$MBX_TEST_REAL_CARGO\" \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&cargo_shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
+        write_object_project(project.path(), 2);
+        let cargo_path = cargo();
+        let settings = [
+            ("CARGO", cargo_shim.to_str().unwrap()),
+            ("MBX_TEST_REAL_CARGO", cargo_path.to_str().unwrap()),
+            ("MBX_TEST_WORKSPACE_WRAPPER", wrapper.to_str().unwrap()),
+            ("MBX_TEST_WRAPPER_LOG", wrapper_log.to_str().unwrap()),
+            ("MBX_TEST_WORKSPACE_MODE", mode),
+            ("MBX_INCREMENTAL", "1"),
+        ];
+        cargo_with(
+            project.path(),
+            store.path(),
+            &reports.path().join(format!("{mode}.json")),
+            &["build", "--offline"],
+            &settings,
+        );
+
+        assert!(
+            std::fs::read_to_string(&wrapper_log).is_ok_and(|log| log.contains("called")),
+            "Cargo did not call the workspace wrapper selected by {mode}"
+        );
+        let after = object_files(project.path());
+        for (name, inode) in old_objects {
+            assert_eq!(
+                after.get(&name),
+                Some(&inode),
+                "the no-op workspace wrapper must not remove {name} ({mode})"
+            );
+        }
+    }
 }

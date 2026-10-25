@@ -2203,6 +2203,19 @@ fn only_a_compiler_run_through_another_program_is_wrapped() {
             _ => None,
         }
     ));
+    let nested_arguments = [rustc.to_os_string(), OsString::from("--crate-name")];
+    assert!(super::is_nested_rustc_workspace_wrapper(
+        other,
+        &nested_arguments
+    ));
+    assert!(!super::is_nested_rustc_workspace_wrapper(
+        clippy,
+        &nested_arguments
+    ));
+    assert!(!super::is_nested_rustc_workspace_wrapper(
+        rustc,
+        &[OsString::from("--crate-name")]
+    ));
     // Under `cargo clippy`, dependencies still run rustc, and clippy-driver
     // compiles in its own process.
     assert!(!compiler_runs_through_wrapper_using(

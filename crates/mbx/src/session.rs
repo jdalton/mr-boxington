@@ -1761,9 +1761,11 @@ pub fn run_rustc_shim() -> ExitCode {
     if let Some(linker) = std::env::var_os(MANAGED_LINKER_ENV).filter(|path| !path.is_empty()) {
         use_managed_linker(&mut arguments, &linker);
     }
-    let is_workspace_wrapper = workspace_wrapper_matches(&rustc);
+    let is_workspace_wrapper =
+        workspace_wrapper_matches(&rustc) || is_nested_rustc_workspace_wrapper(&rustc, &arguments);
     let (wrapper_argument, compiler_arguments) = workspace_wrapper_arguments(&rustc, &arguments);
     let cacheable_workspace_wrapper = is_workspace_wrapper && wrapper_argument.is_some();
+    let opaque_workspace_wrapper = is_workspace_wrapper && !cacheable_workspace_wrapper;
     // Cargo moves long argument lists into `@argfile`s; the flags that name
     // and describe the compilation are inside them then. rustc still receives
     // the arguments as they were given.
@@ -1793,7 +1795,13 @@ pub fn run_rustc_shim() -> ExitCode {
         }
     }
 
-    run_transparent_rustc(rustc, arguments, &described, bypassed)
+    run_transparent_rustc(
+        rustc,
+        arguments,
+        &described,
+        bypassed,
+        opaque_workspace_wrapper,
+    )
 }
 
 /// Explicit Cargo targets must not affect host build scripts or proc macros.
@@ -1868,6 +1876,7 @@ fn workspace_wrapper_matches(compiler: &OsStr) -> bool {
     workspace_wrapper_matches_using(compiler, |name| std::env::var_os(name))
 }
 
+/// Check the saved and live Cargo settings for this compiler path.
 fn workspace_wrapper_matches_using(
     compiler: &OsStr,
     get: impl Fn(&str) -> Option<OsString>,
@@ -1880,6 +1889,14 @@ fn workspace_wrapper_matches_using(
     .into_iter()
     .filter_map(get)
     .any(|wrapper| wrapper == compiler)
+}
+
+/// Detect Cargo's nested workspace-wrapper argv even when `--config` supplied it.
+fn is_nested_rustc_workspace_wrapper(compiler: &OsStr, arguments: &[OsString]) -> bool {
+    !is_clippy_driver(compiler)
+        && arguments
+            .first()
+            .is_some_and(|rustc| executable_stem(rustc) == Some("rustc"))
 }
 
 fn compiler_runs_through_wrapper_using(
@@ -1917,8 +1934,9 @@ fn run_transparent_rustc(
     arguments: Vec<OsString>,
     described: &[OsString],
     bypassed: bool,
+    opaque_workspace_wrapper: bool,
 ) -> ExitCode {
-    let wrapped = compiler_runs_through_wrapper(&rustc);
+    let wrapped = opaque_workspace_wrapper || compiler_runs_through_wrapper(&rustc);
     // The compiler below may replace this process, and with it any lease on
     // a stable `OUT_DIR`; it compiles against Cargo's own tree instead.
     crate::out_dir::restore();
@@ -2077,6 +2095,7 @@ fn run_transparent_rustc(
     }
 }
 
+/// Avoid object cleanup when a wrapper can report success without compiling.
 fn object_snapshot_for_transparent_compile(
     wrapped: bool,
     described: &[OsString],
